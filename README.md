@@ -37,7 +37,7 @@ After generating you get an interactive piano roll, an audio preview synthesized
 ## Running it locally
 
 ```bash
-git clone https://github.com/taibaik/skripsi-midi-generator.git
+git clone https://github.com/mhaiqaldk/skripsi-midi-generator.git
 cd skripsi-midi-generator
 python -m venv venv
 source venv/bin/activate
