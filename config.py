@@ -9,6 +9,9 @@ BAR_BEATS = 4
 
 MIN_BPM, MAX_BPM = 60, 140
 
+# Session length options (minutes). 0 = play the progression once.
+SESSION_LENGTHS = [0, 1, 2, 3, 5, 10]
+
 # Velocity rules ---------------------------------------------------------
 # Base velocity is chosen by tempo band: (upper BPM bound, base velocity).
 # The first band whose bound is above the tempo wins.
@@ -26,6 +29,7 @@ BASS_OFFSET, BASS_JITTER = -5, 5
 KICK_OFFSET = 20
 SNARE_OFFSET = 10
 HIHAT_OFFSET, HIHAT_JITTER = -20, 3
+COUNT_IN_OFFSET = 0
 
 # General MIDI programs
 HARMONY_PROGRAM = 0   # Acoustic Grand Piano

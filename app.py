@@ -3,10 +3,13 @@
 import streamlit as st
 
 from config import APP_NAME
+from state import init_defaults, persist_settings
 from ui import apply_style
 
 st.set_page_config(page_title=APP_NAME, page_icon="🎵", layout="centered")
 apply_style()
+init_defaults()
+persist_settings()
 
 page = st.navigation([
     st.Page("views/generate.py", title="Generate", icon=":material/music_note:",

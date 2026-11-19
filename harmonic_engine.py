@@ -164,7 +164,7 @@ def _inversions(root_position):
     return candidates
 
 
-def _movement(prev, cand):
+def voice_movement(prev, cand):
     """Semitone movement between two voicings (nearest-note matching,
     counted in both directions so added/dropped notes are penalised)."""
     return sum(min(abs(c - p) for p in prev) for c in cand) + sum(
@@ -191,7 +191,7 @@ def voice_lead(chord_symbols, smooth=True):
             candidates = _inversions(root_position) or [root_position]
             voicing = min(
                 candidates,
-                key=lambda c: (_movement(prev, c), c[0]),
+                key=lambda c: (voice_movement(prev, c), c[0]),
             )
 
         result.append((voicing, bass))

@@ -115,3 +115,85 @@ def test_generated_midi_is_valid_and_has_three_tracks():
     assert r["bars"] == 3
     assert r["duration"] == pytest.approx(6.0)
     assert midi.get_end_time() == pytest.approx(6.0, abs=0.05)
+
+
+# --- sessions and tempo ramp ----------------------------------------------
+
+from main import plan_session, tempo_schedule  # noqa: E402
+from pattern_engine import SIDE_STICK, bar_seconds  # noqa: E402
+
+
+def test_tempo_schedule_equal_steps():
+    assert tempo_schedule(100, 100, 3) == [100.0, 100.0, 100.0]
+    assert tempo_schedule(90, 110, 5) == [90.0, 95.0, 100.0, 105.0, 110.0]
+    assert tempo_schedule(80, 60, 3) == [80.0, 70.0, 60.0]
+
+
+def test_session_reaches_target_with_fewest_loops():
+    loops, bpms = plan_session(4, 120, 120, 1, count_in=False, ending=False)
+    total = sum(bar_seconds(b) for b in bpms)
+    assert total >= 60
+    assert total - 4 * bar_seconds(120) < 60  # one fewer loop would be short
+    assert loops == 8
+
+
+def test_count_in_and_ending_add_one_bar_each():
+    plain = run_generator(["C", "G"], bpm=100, seed=1)
+    extra = run_generator(["C", "G"], bpm=100, seed=1, count_in=True, ending=True)
+    assert extra["bars"] == plain["bars"] + 2
+    midi = pretty_midi.PrettyMIDI(io.BytesIO(extra["midi_bytes"]))
+    clicks = [n for n in midi.instruments[2].notes if n.pitch == SIDE_STICK]
+    assert len(clicks) == 4 and max(n.start for n in clicks) < bar_seconds(100)
+    # ending bar holds the first chord's root in the bass
+    last_bass = max(midi.instruments[1].notes, key=lambda n: n.start)
+    assert last_bass.pitch % 12 == 0  # C
+
+
+def test_tempo_ramp_writes_tempo_map_and_keeps_bar_grid():
+    r = run_generator(["C", "G", "Am", "F"], bpm=90, bpm_end=110,
+                      session_minutes=1, ending=True, seed=5)
+    assert r["bar_bpms"][0] == 90 and r["bar_bpms"][-1] == 110
+    midi = pretty_midi.PrettyMIDI(io.BytesIO(r["midi_bytes"]))
+    _, tempi = midi.get_tempo_changes()
+    assert len(tempi) == r["bars"]
+    assert tempi[0] == pytest.approx(90, abs=0.1)
+    assert tempi[-1] == pytest.approx(110, abs=0.1)
+    # every kick on beat 1 sits exactly on a bar line of the tempo map
+    ticks_per_bar = 4 * midi.resolution
+    downbeat_kicks = sorted(n.start for n in midi.instruments[2].notes if n.pitch == 36)[::2]
+    for t in downbeat_kicks:
+        assert midi.time_to_tick(t) % ticks_per_bar in (0, ticks_per_bar - 1)
+    assert r["duration"] >= 60
+
+
+def test_same_seed_identical_with_session_options():
+    kwargs = dict(bpm=80, bpm_end=60, session_minutes=2, count_in=True, ending=True, seed=9)
+    a = run_generator(["Am", "F", "C", "G"], **kwargs)
+    b = run_generator(["Am", "F", "C", "G"], **kwargs)
+    assert a["midi_bytes"] == b["midi_bytes"]
+
+
+# --- explanation -------------------------------------------------------------
+
+from explain_engine import explain, harmony_rows, inversion_name  # noqa: E402
+
+
+def test_inversion_names():
+    assert inversion_name("C", [60, 64, 67]) == "root position"
+    assert inversion_name("G", [59, 62, 67]) == "1st inversion"
+    assert inversion_name("F", [60, 65, 69]) == "2nd inversion"
+
+
+def test_explanation_matches_the_result():
+    r = run_generator(["C", "G", "Am", "F"], bpm=70, bpm_end=90, session_minutes=1,
+                      count_in=True, ending=True, preset_name="Relaxation", seed=77)
+    sections = dict(explain(r))
+    assert list(sections) == ["Preset", "Session", "Rhythm", "Harmony",
+                              "Loudness", "Reproducibility"]
+    text = " ".join(" ".join(v) for v in sections.values())
+    assert "seed **77**" in text
+    assert "70 → 90 BPM" in text
+    assert "hi-hat" not in " ".join(sections["Loudness"])  # complexity 1: no hats
+    rows = harmony_rows(r)
+    assert [row["Chord"] for row in rows] == ["C", "G", "Am", "F"]
+    assert rows[1]["Movement"] == "3 semitones"

@@ -11,7 +11,7 @@ import random
 import pretty_midi
 
 import config
-from pattern_engine import KICK, SNARE
+from pattern_engine import KICK, SIDE_STICK, SNARE
 
 OUTPUT_DIR = "outputs"
 
@@ -26,7 +26,9 @@ def base_velocity_for(bpm):
 
 
 def velocity_for(event, bpm, rng):
-    base = base_velocity_for(bpm)
+    """Velocity from the tempo band of the event's own bar (tempo ramps
+    change the band as the tempo moves), plus per-track offsets."""
+    base = base_velocity_for(event.get("bpm", bpm))
     track = event["track"]
 
     if track == "harmony":
@@ -34,8 +36,7 @@ def velocity_for(event, bpm, rng):
             -config.HARMONY_JITTER, config.HARMONY_JITTER
         )
     elif track == "bass":
-        bar_length = config.BAR_BEATS * (60 / bpm)
-        if event["start"] % bar_length < 0.01:
+        if event.get("downbeat"):
             v = base + config.BASS_DOWNBEAT_OFFSET
         else:
             v = base + config.BASS_OFFSET + rng.randint(
@@ -45,6 +46,8 @@ def velocity_for(event, bpm, rng):
         v = base + config.KICK_OFFSET
     elif event["pitch"] == SNARE:
         v = base + config.SNARE_OFFSET
+    elif event["pitch"] == SIDE_STICK:
+        v = base + config.COUNT_IN_OFFSET
     else:  # hi-hat
         v = base + config.HIHAT_OFFSET + rng.randint(
             -config.HIHAT_JITTER, config.HIHAT_JITTER
@@ -53,11 +56,29 @@ def velocity_for(event, bpm, rng):
     return max(1, min(127, v))
 
 
-def build_midi(all_events, bpm, seed=None):
-    """Return a ``pretty_midi.PrettyMIDI`` object for the events."""
+def apply_tempo_map(midi, bar_bpms):
+    """Write one tempo per bar so the file's bar grid matches the music
+    in any DAW. Must run before notes are converted to ticks (on write)."""
+    ticks_per_bar = config.BAR_BEATS * midi.resolution
+    scales = []
+    for i, b in enumerate(bar_bpms):
+        scale = 60.0 / (b * midi.resolution)
+        if not scales or abs(scales[-1][1] - scale) > 1e-12:
+            scales.append((i * ticks_per_bar, scale))
+    midi._tick_scales = scales
+    midi._update_tick_to_time(len(bar_bpms) * ticks_per_bar + 1)
+
+
+def build_midi(all_events, bpm, seed=None, bar_bpms=None):
+    """Return a ``pretty_midi.PrettyMIDI`` object for the events.
+
+    ``bar_bpms`` (one tempo per bar from time 0) adds a tempo map for ramps.
+    """
     rng = random.Random(seed)
 
     midi = pretty_midi.PrettyMIDI(initial_tempo=bpm)
+    if bar_bpms and len(set(bar_bpms)) > 1:
+        apply_tempo_map(midi, bar_bpms)
     instruments = {
         "harmony": pretty_midi.Instrument(
             program=config.HARMONY_PROGRAM, name="Harmony"
