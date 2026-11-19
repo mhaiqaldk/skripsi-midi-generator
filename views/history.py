@@ -59,9 +59,22 @@ if col2.button("Clear history", icon=":material/delete:", width="stretch"):
     st.session_state.history = []
     st.rerun()
 
+def time_ago(created):
+    """Relative time, so it reads right in any time zone. Both times come
+    from the server's clock, so the difference is always correct."""
+    seconds = max(0, int((datetime.now() - created).total_seconds()))
+    if seconds < 60:
+        return "just now"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} min ago"
+    hours = minutes // 60
+    return f"{hours} hour{'s' if hours > 1 else ''} ago"
+
+
 for i, result in enumerate(history):
     with st.container(border=True):
-        created = datetime.fromisoformat(result["created"]).strftime("%H:%M:%S")
+        created = time_ago(datetime.fromisoformat(result["created"]))
         st.markdown(f"**{result['progression']}**  ·  {created}")
         minutes, seconds = divmod(round(result["duration"]), 60)
         chips([
