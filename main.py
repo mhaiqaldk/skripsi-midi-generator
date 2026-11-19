@@ -1,125 +1,123 @@
-from input_module import parse_input
-from harmonic_engine import get_triad
-from pattern_engine import generate_patterns
-from midi_engine import create_midi
-from config import BAR_BEATS
+"""Generation pipeline: chords -> voicings -> patterns -> MIDI.
+
+``run_generator`` works fully in memory and returns a result dict, so the
+Streamlit app never needs to write files on the server. Pass ``save=True``
+for local research runs: the MIDI goes to ``outputs/`` and a row is added
+to ``outputs/run_log.csv``.
+"""
 
 import csv
 import os
+import random
 from datetime import datetime
 
+from config import BAR_BEATS
+from harmonic_engine import parse_chord, voice_lead
+from midi_engine import OUTPUT_DIR, build_midi, midi_to_bytes, save_midi
+from pattern_engine import generate_patterns
 
-OUTPUT_DIR = "outputs"
+LOG_FILE = os.path.join(OUTPUT_DIR, "run_log.csv")
+LOG_HEADER = [
+    "timestamp", "bpm", "complexity", "preset", "chord_progression",
+    "output_filename", "number_of_events", "seed", "voice_leading",
+]
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-LOG_FILE = os.path.join(
-    OUTPUT_DIR,
-    "run_log.csv"
-)
-
-
-if not os.path.exists(LOG_FILE):
-
-    with open(
-        LOG_FILE,
-        mode="w",
-        newline=""
-    ) as file:
-
-        writer = csv.writer(file)
-
-        writer.writerow([
-            "timestamp",
-            "bpm",
-            "complexity",
-            "preset",
-            "chord_progression",
-            "output_filename",
-            "number_of_events"
-        ])
+SEED_MAX = 99_999
 
 
-def write_run_log(
-    bpm,
-    complexity,
-    preset_name,
-    chords,
-    output_filename,
-    event_count
-):
+def new_seed():
+    return random.randint(1, SEED_MAX)
 
-    with open(
-        LOG_FILE,
-        mode="a",
-        newline=""
-    ) as file:
 
-        writer = csv.writer(file)
+def _normalize_chords(chords):
+    """Accept ``["C", "G"]`` or ``[("C", 2), ("G", 1)]``."""
+    items = []
+    for chord in chords:
+        if isinstance(chord, (tuple, list)):
+            symbol, bars = chord
+        else:
+            symbol, bars = chord, 1
+        items.append((parse_chord(symbol)[2], int(bars)))
+    return items
 
-        writer.writerow([
-            datetime.now().isoformat(),
-            bpm,
-            complexity,
-            preset_name,
-            " ".join(chords),
-            output_filename,
-            event_count
-        ])
+
+def progression_label(items):
+    return " ".join(s if b == 1 else f"{s}:{b}" for s, b in items)
 
 
 def run_generator(
     chords,
     bpm=100,
     complexity_level=1,
-    preset_name="Manual"
+    preset_name="Manual",
+    seed=None,
+    smooth_voicing=True,
+    save=False,
 ):
+    items = _normalize_chords(chords)
+    if seed is None:
+        seed = new_seed()
 
-    data = parse_input(chords, bpm)
+    seconds_per_beat = 60 / bpm
+    bar_duration = BAR_BEATS * seconds_per_beat
 
-    seconds_per_beat = (
-        60 / data["bpm"]
-    )
-
-    current_time = 0
+    voicings = voice_lead([s for s, _ in items], smooth=smooth_voicing)
 
     all_events = []
+    current_time = 0.0
+    for (symbol, bars), (voicing, bass) in zip(items, voicings):
+        all_events.extend(generate_patterns(
+            voicing, bass, current_time, seconds_per_beat,
+            complexity_level, bars=bars,
+        ))
+        current_time += bars * bar_duration
 
-    for chord in data["chords"]:
+    midi = build_midi(all_events, bpm, seed=seed)
+    midi_bytes = midi_to_bytes(midi)
 
-        triad = get_triad(chord)
+    filename = f"rgmbi_{bpm}bpm_c{complexity_level}_seed{seed}.mid"
 
-        events = generate_patterns(
-            triad,
-            current_time,
-            seconds_per_beat,
-            complexity_level
-        )
+    result = {
+        "midi": midi,
+        "midi_bytes": midi_bytes,
+        "filename": filename,
+        "event_count": len(all_events),
+        "chords": items,
+        "progression": progression_label(items),
+        "bars": sum(b for _, b in items),
+        "duration": current_time,
+        "bpm": bpm,
+        "complexity": complexity_level,
+        "preset": preset_name,
+        "seed": seed,
+        "smooth_voicing": smooth_voicing,
+        "created": datetime.now().isoformat(timespec="seconds"),
+    }
 
-        all_events.extend(events)
+    if save:
+        result["path"] = save_midi(midi_bytes, filename)
+        write_run_log(result)
 
-        current_time += (
-            BAR_BEATS
-            * seconds_per_beat
-        )
+    return result
 
-    output_path = create_midi(
-        all_events,
-        bpm,
-        complexity_level=complexity_level
-    )
 
-    output_filename = (
-        output_path.split("/")[-1]
-    )
+def write_run_log(result):
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    write_run_log(
-        bpm=bpm,
-        complexity=complexity_level,
-        preset_name=preset_name,
-        chords=chords,
-        output_filename=output_filename,
-        event_count=len(all_events)
-    )
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, newline="") as f:
+            header = next(csv.reader(f), None)
+        if header != LOG_HEADER:
+            # keep the thesis-era log intact, start a new one
+            os.rename(LOG_FILE, LOG_FILE.replace(".csv", "_legacy.csv"))
 
-    return output_path, len(all_events)
+    is_new = not os.path.exists(LOG_FILE)
+    with open(LOG_FILE, "a", newline="") as f:
+        writer = csv.writer(f)
+        if is_new:
+            writer.writerow(LOG_HEADER)
+        writer.writerow([
+            result["created"], result["bpm"], result["complexity"],
+            result["preset"], result["progression"], result["filename"],
+            result["event_count"], result["seed"], result["smooth_voicing"],
+        ])

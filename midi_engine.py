@@ -1,171 +1,107 @@
-import pretty_midi
-import random
+"""MIDI engine: turns pattern events into a multi-track MIDI file.
+
+Velocity rules live in ``config.py``. Humanisation uses a seeded random
+generator, so the same seed and inputs always give an identical file.
+"""
+
+import io
 import os
+import random
 
-from datetime import datetime
+import pretty_midi
 
-from config import (
-    BASE_VELOCITY,
-    VELOCITY_VARIATION
-)
-
+import config
+from pattern_engine import KICK, SNARE
 
 OUTPUT_DIR = "outputs"
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+TRACK_ORDER = ["harmony", "bass", "drums"]
 
 
-def apply_velocity(base_velocity):
+def base_velocity_for(bpm):
+    for upper, velocity in config.TEMPO_VELOCITY_BANDS:
+        if bpm < upper:
+            return velocity
+    return config.TEMPO_VELOCITY_BANDS[-1][1]
 
-    return base_velocity + random.randint(
-        -VELOCITY_VARIATION,
-        VELOCITY_VARIATION
-    )
 
+def velocity_for(event, bpm, rng):
+    base = base_velocity_for(bpm)
+    track = event["track"]
 
-def create_midi(
-    all_events,
-    bpm,
-    complexity_level=1,
-    output_name=None
-):
-
-    timestamp = datetime.now().strftime(
-        "%Y%m%d_%H%M%S"
-    )
-
-    if output_name is None:
-
-        output_name = (
-            f"output_{bpm}"
-            f"_c{complexity_level}"
-            f"_{timestamp}.mid"
+    if track == "harmony":
+        v = base + config.HARMONY_OFFSET + rng.randint(
+            -config.HARMONY_JITTER, config.HARMONY_JITTER
+        )
+    elif track == "bass":
+        bar_length = config.BAR_BEATS * (60 / bpm)
+        if event["start"] % bar_length < 0.01:
+            v = base + config.BASS_DOWNBEAT_OFFSET
+        else:
+            v = base + config.BASS_OFFSET + rng.randint(
+                -config.BASS_JITTER, config.BASS_JITTER
+            )
+    elif event["pitch"] == KICK:
+        v = base + config.KICK_OFFSET
+    elif event["pitch"] == SNARE:
+        v = base + config.SNARE_OFFSET
+    else:  # hi-hat
+        v = base + config.HIHAT_OFFSET + rng.randint(
+            -config.HIHAT_JITTER, config.HIHAT_JITTER
         )
 
-    print("Creating MIDI file...")
+    return max(1, min(127, v))
 
-    print(
-        f"Number of events received: "
-        f"{len(all_events)}"
-    )
 
-    midi = pretty_midi.PrettyMIDI(
-        initial_tempo=bpm
-    )
+def build_midi(all_events, bpm, seed=None):
+    """Return a ``pretty_midi.PrettyMIDI`` object for the events."""
+    rng = random.Random(seed)
 
-    harmony = pretty_midi.Instrument(
-        program=0
-    )
-
-    bass = pretty_midi.Instrument(
-        program=33
-    )
-
-    drums = pretty_midi.Instrument(
-        program=0,
-        is_drum=True
-    )
+    midi = pretty_midi.PrettyMIDI(initial_tempo=bpm)
+    instruments = {
+        "harmony": pretty_midi.Instrument(
+            program=config.HARMONY_PROGRAM, name="Harmony"
+        ),
+        "bass": pretty_midi.Instrument(
+            program=config.BASS_PROGRAM, name="Bass"
+        ),
+        "drums": pretty_midi.Instrument(
+            program=0, is_drum=True, name="Drums"
+        ),
+    }
 
     for event in all_events:
-
-        if bpm < 80:
-
-            base_velocity = 65
-
-        elif bpm < 110:
-
-            base_velocity = 80
-
-        elif bpm < 140:
-
-            base_velocity = 95
-
-        else:
-
-            base_velocity = 110
-
-        if event["track"] == "harmony":
-
-            velocity = (
-                base_velocity - 5
-                + random.randint(-6, 6)
-            )
-
-        elif event["track"] == "bass":
-
-            if event["start"] % (
-                4 * (60 / bpm)
-            ) < 0.01:
-
-                velocity = (
-                    base_velocity + 10
-                )
-
-            else:
-
-                velocity = (
-                    base_velocity - 5
-                    + random.randint(-5, 5)
-                )
-
-        else:
-
-            if event["pitch"] == 36:
-
-                velocity = (
-                    base_velocity + 20
-                )
-
-            elif event["pitch"] == 38:
-
-                velocity = (
-                    base_velocity + 10
-                )
-
-            else:
-
-                velocity = (
-                    base_velocity - 20
-                    + random.randint(-3, 3)
-                )
-
-        velocity = max(
-            0,
-            min(127, velocity)
-        )
-
-        note = pretty_midi.Note(
-            velocity=velocity,
+        instruments[event["track"]].notes.append(pretty_midi.Note(
+            velocity=velocity_for(event, bpm, rng),
             pitch=event["pitch"],
             start=event["start"],
-            end=event["end"]
-        )
+            end=event["end"],
+        ))
 
-        if event["track"] == "harmony":
+    midi.instruments.extend(instruments[t] for t in TRACK_ORDER)
+    return midi
 
-            harmony.notes.append(note)
 
-        elif event["track"] == "bass":
+def midi_to_bytes(midi):
+    buffer = io.BytesIO()
+    midi.write(buffer)
+    return buffer.getvalue()
 
-            bass.notes.append(note)
 
-        else:
+def save_midi(midi_bytes, filename, output_dir=OUTPUT_DIR):
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, filename)
+    with open(path, "wb") as f:
+        f.write(midi_bytes)
+    return path
 
-            drums.notes.append(note)
 
-    midi.instruments.extend([
-        harmony,
-        bass,
-        drums
-    ])
+def create_midi(all_events, bpm, complexity_level=1, output_name=None, seed=None):
+    """Thesis-era helper: build and save to ``outputs/``. Returns the path."""
+    from datetime import datetime
 
-    output_path = os.path.join(
-        OUTPUT_DIR,
-        output_name
-    )
-
-    midi.write(output_path)
-
-    print(f"MIDI saved as {output_path}")
-
-    return output_path
+    if output_name is None:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_name = f"output_{bpm}_c{complexity_level}_{stamp}.mid"
+    midi = build_midi(all_events, bpm, seed=seed)
+    return save_midi(midi_to_bytes(midi), output_name)

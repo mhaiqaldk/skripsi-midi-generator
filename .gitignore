@@ -4,3 +4,4 @@ __pycache__/
 .DS_Store
 outputs/*.mid
 outputs/run_log.csv
+.pytest_cache/
